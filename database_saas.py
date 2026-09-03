@@ -55,6 +55,21 @@ def get_engine():
     return _engine
 
 
+def check_connection():
+    """Cheap connectivity probe. Returns (ok: bool, detail: str).
+
+    Callers use this to surface ONE clear, actionable message at app
+    startup instead of Streamlit's generic redacted OperationalError
+    turning up deep inside a form submit (e.g. signup) with no hint
+    that the real cause is a missing/unreachable DATABASE_URL."""
+    try:
+        with _engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
 # ---------------------------------------------------------------------------
 # Password hashing — IDENTICAL scheme to the existing local app on purpose.
 # ---------------------------------------------------------------------------

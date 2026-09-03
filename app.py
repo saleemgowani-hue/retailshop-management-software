@@ -126,6 +126,24 @@ for key, default in [
 
 
 # ---------------------------------------------------------------------------
+# Database connectivity check — fail fast with ONE actionable message
+# instead of a redacted OperationalError surfacing later inside a form
+# (e.g. Signup), which gives the admin no clue that DATABASE_URL is
+# missing/unreachable.
+# ---------------------------------------------------------------------------
+_db_ok, _db_error = db.check_connection()
+if not _db_ok:
+    st.error(
+        "⚠️ Database se connect nahi ho paaya. Agar yeh app Streamlit Cloud "
+        "par deployed hai, to **Manage app → Settings → Secrets** mein "
+        "`DATABASE_URL = \"postgresql://user:password@host:5432/dbname\"` "
+        "add karein aur app ko reboot karein."
+    )
+    st.caption(f"Details: {_db_error}")
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
 # Tenant resolution + Login screen
 #
 # A shop is identified by its "Shop Code" (the tenant's installation_id --
