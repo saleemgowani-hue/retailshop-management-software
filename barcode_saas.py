@@ -143,7 +143,10 @@ def render_print_button_html(receipt_html, key, label="🖨️ Print"):
     </div>
     <script>
     function printReceipt_{key}() {{
-        var html = atob("{encoded}");
+        var binary = atob("{encoded}");
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) {{ bytes[i] = binary.charCodeAt(i); }}
+        var html = new TextDecoder('utf-8').decode(bytes);
         var w = window.open('', '_blank', 'width=400,height=600');
         if (!w) {{ alert('Popup blocked hai — browser settings me popups allow karein.'); return; }}
         w.document.write(html);
