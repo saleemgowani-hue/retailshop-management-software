@@ -17,6 +17,7 @@ Connection: SQLAlchemy engine with pooling (Section O performance audit:
 import os
 import hashlib
 import binascii
+import secrets
 import uuid
 from datetime import date, datetime, timedelta
 from sqlalchemy import create_engine, text
@@ -271,3 +272,119 @@ def set_subscription_status(tenant_id: str, status: str):
             """),
             {"status": status, "tid": tenant_id},
         )
+
+
+# ---------------------------------------------------------------------------
+# LICENSE KEYS — admin-issued, one-time activation codes (see generate_
+# license_keys.py). A valid key is what lets New Shop Signup activate a
+# subscription immediately instead of leaving the shop locked out pending
+# manual admin action.
+# ---------------------------------------------------------------------------
+_PLAN_DAYS = {"monthly": 30, "yearly": 365}
+
+
+def generate_license_key(plan: str) -> str:
+    """Mints and stores one unused key for `plan` ('monthly'/'yearly').
+    Returns the code. Admin-only — run via generate_license_keys.py."""
+    if plan not in _PLAN_DAYS:
+        raise ValueError("plan must be 'monthly' or 'yearly'")
+    code = "-".join(secrets.token_hex(2).upper() for _ in range(4))
+    with _engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO license_keys (code, plan, days) VALUES (:code, :plan, :days)"),
+            {"code": code, "plan": plan, "days": _PLAN_DAYS[plan]},
+        )
+    return code
+
+
+def validate_license_key(code: str):
+    """Checks a key WITHOUT consuming it. Returns (ok, plan, days, message)."""
+    with _engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT plan, days, used_by_tenant_id FROM license_keys WHERE code = :code"),
+            {"code": (code or "").strip().upper()},
+        ).fetchone()
+    if not row:
+        return False, None, None, "License key invalid hai."
+    if row[2] is not None:
+        return False, None, None, "Yeh license key pehle hi use ho chuki hai."
+    return True, row[0], row[1], "OK"
+
+
+def redeem_license_key(code: str, tenant_id: str) -> bool:
+    """Atomically marks a key used by this tenant. Returns False if it was
+    already redeemed by someone else between validate and redeem (race)."""
+    with _engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE license_keys SET used_by_tenant_id = :tid, used_at = now()
+                WHERE code = :code AND used_by_tenant_id IS NULL
+            """),
+            {"tid": tenant_id, "code": (code or "").strip().upper()},
+        )
+        return result.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# DEMO ACCESS — one shared, persistent "Try Demo" tenant so a visitor can
+# explore the app with one click, with no signup/license key needed.
+# ---------------------------------------------------------------------------
+DEMO_USERNAME = "admin"
+DEMO_PASSWORD = "demo1234"
+
+
+def activate_demo_subscription(tenant_id: str):
+    """status='demo' never expires (see is_subscription_active) — plan/dates
+    are required NOT NULL columns but not otherwise meaningful here."""
+    today = date.today()
+    with _engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO subscriptions (tenant_id, plan, status, current_period_start, current_period_end)
+                VALUES (:tid, 'monthly', 'demo', :start, :start)
+            """),
+            {"tid": tenant_id, "start": today},
+        )
+
+
+def get_or_create_demo_tenant():
+    """Returns (tenant_id, shop_name, shop_code) for the single shared demo
+    shop, creating and seeding it on first call. is_demo=TRUE (with a
+    partial unique index) makes this idempotent under concurrent first
+    clicks: on a race, the loser's INSERT/UPDATE fails and it just re-reads
+    the winner's row instead."""
+    with _engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id, shop_name, installation_id FROM tenants WHERE is_demo LIMIT 1")
+        ).fetchone()
+        if row:
+            return str(row[0]), row[1], row[2]
+
+    shop_name = "Demo Shop (Try Me)"
+    tenant_id = create_tenant(shop_name)
+    try:
+        with _engine.begin() as conn:
+            conn.execute(text("UPDATE tenants SET is_demo = TRUE WHERE id = :tid"), {"tid": tenant_id})
+    except Exception:
+        with _engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT id, shop_name, installation_id FROM tenants WHERE is_demo LIMIT 1")
+            ).fetchone()
+        return str(row[0]), row[1], row[2]
+
+    save_shop_setup(
+        tenant_id, address="123 Demo Street, Sample City", mobile="9999999999",
+        gst_number="27DEMOG1234A1Z5", footer_message="Thank You, Visit Again!",
+        terms="Goods once sold will not be taken back.",
+    )
+    register_user(tenant_id, DEMO_USERNAME, DEMO_PASSWORD, "Admin")
+    activate_demo_subscription(tenant_id)
+
+    from demo_data_saas import seed_demo_data
+    seed_demo_data(tenant_id)
+
+    with _engine.connect() as conn:
+        shop_code = conn.execute(
+            text("SELECT installation_id FROM tenants WHERE id = :tid"), {"tid": tenant_id}
+        ).fetchone()[0]
+    return tenant_id, shop_name, shop_code
