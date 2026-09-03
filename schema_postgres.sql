@@ -20,8 +20,13 @@ CREATE TABLE IF NOT EXISTS tenants (
     shop_name       TEXT NOT NULL,
     installation_id TEXT UNIQUE,          -- carried over from the old local "shop_id", for support lookups
     is_demo         BOOLEAN NOT NULL DEFAULT FALSE,
+    demo_reset_at   TIMESTAMPTZ,          -- last time the shared demo tenant's data was auto-reset
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- CREATE TABLE IF NOT EXISTS is a no-op against an already-existing
+-- database, so this ADD COLUMN is what actually lands demo_reset_at on a
+-- database created before this column existed. Safe to re-run.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS demo_reset_at TIMESTAMPTZ;
 -- At most one shared "Try Demo" tenant at a time — makes
 -- get_or_create_demo_tenant() safe under concurrent first clicks.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_single_demo ON tenants (is_demo) WHERE is_demo;

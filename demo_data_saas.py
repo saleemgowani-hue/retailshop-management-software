@@ -13,6 +13,7 @@ times against a fresh tenant only — it does not check for/skip existing
 data, so call clear_tenant_business_data() first if re-seeding.
 """
 
+import secrets
 from datetime import date, timedelta
 from sqlalchemy import text
 
@@ -132,7 +133,11 @@ def seed_demo_data(tenant_id: str) -> int:
             else:
                 cash_amt, upi_amt = 0.0, 0.0
 
-            bill_no = f"DEMO-{bdate.strftime('%Y%m%d')}-{count}"
+            # Random suffix (not just date+count) so this never collides with
+            # UNIQUE(tenant_id, bill_number) if seed_demo_data() ever runs
+            # twice for the same tenant on the same day without a clear in
+            # between (e.g. clicking "Add Demo Data" again from Settings).
+            bill_no = f"DEMO-{bdate.strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
             row = conn.execute(text("""
                 INSERT INTO sales (tenant_id, bill_number, bill_date, customer_name, customer_mobile,
                                     payment_mode, subtotal, discount, gst, grand_total, cash_amount, upi_amount)
