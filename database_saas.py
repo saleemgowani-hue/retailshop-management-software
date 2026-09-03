@@ -353,6 +353,13 @@ def redeem_license_key(code: str, tenant_id: str) -> bool:
 # ---------------------------------------------------------------------------
 DEMO_USERNAME = "admin"
 DEMO_PASSWORD = "demo1234"
+DEMO_RESET_INTERVAL_MINUTES = 60
+
+_DEMO_SHOP_SETTINGS = dict(
+    address="123 Demo Street, Sample City", mobile="9999999999",
+    gst_number="27DEMOG1234A1Z5", footer_message="Thank You, Visit Again!",
+    terms="Goods once sold will not be taken back.",
+)
 
 
 def activate_demo_subscription(tenant_id: str):
@@ -369,6 +376,43 @@ def activate_demo_subscription(tenant_id: str):
         )
 
 
+def is_demo_tenant(tenant_id: str) -> bool:
+    with _engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT is_demo FROM tenants WHERE id = :tid"), {"tid": tenant_id},
+        ).fetchone()
+        return bool(row and row[0])
+
+
+def maybe_reset_demo_data(tenant_id: str):
+    """Best-effort: if `tenant_id` is the shared demo tenant and more than
+    DEMO_RESET_INTERVAL_MINUTES have passed since it was last reset, wipe
+    whatever a visitor entered and reseed the original sample dataset —
+    so nobody's own data lingers in a shop anyone can log into.
+
+    The UPDATE's WHERE clause makes the check-and-claim atomic: under
+    concurrent visitors hitting this past the 60-minute mark, only one
+    caller's UPDATE actually matches a row (rowcount 1), so only that one
+    proceeds to wipe+reseed — everyone else's UPDATE matches zero rows and
+    returns immediately. No-op (and cheap) for any non-demo tenant_id."""
+    with _engine.begin() as conn:
+        result = conn.execute(
+            text(f"""
+                UPDATE tenants SET demo_reset_at = now()
+                WHERE id = :tid AND is_demo
+                AND (demo_reset_at IS NULL OR demo_reset_at < now() - interval '{DEMO_RESET_INTERVAL_MINUTES} minutes')
+            """),
+            {"tid": tenant_id},
+        )
+        if result.rowcount == 0:
+            return
+
+    save_shop_setup(tenant_id, **_DEMO_SHOP_SETTINGS)
+    from demo_data_saas import clear_tenant_business_data, seed_demo_data
+    clear_tenant_business_data(tenant_id)
+    seed_demo_data(tenant_id)
+
+
 def get_or_create_demo_tenant():
     """Returns (tenant_id, shop_name, shop_code) for the single shared demo
     shop, creating and seeding it on first call. is_demo=TRUE (with a
@@ -380,13 +424,18 @@ def get_or_create_demo_tenant():
             text("SELECT id, shop_name, installation_id FROM tenants WHERE is_demo LIMIT 1")
         ).fetchone()
         if row:
-            return str(row[0]), row[1], row[2]
+            tenant_id = str(row[0])
+            maybe_reset_demo_data(tenant_id)
+            return tenant_id, row[1], row[2]
 
     shop_name = "Demo Shop (Try Me)"
     tenant_id = create_tenant(shop_name)
     try:
         with _engine.begin() as conn:
-            conn.execute(text("UPDATE tenants SET is_demo = TRUE WHERE id = :tid"), {"tid": tenant_id})
+            conn.execute(
+                text("UPDATE tenants SET is_demo = TRUE, demo_reset_at = now() WHERE id = :tid"),
+                {"tid": tenant_id},
+            )
     except Exception:
         with _engine.connect() as conn:
             row = conn.execute(
@@ -394,11 +443,7 @@ def get_or_create_demo_tenant():
             ).fetchone()
         return str(row[0]), row[1], row[2]
 
-    save_shop_setup(
-        tenant_id, address="123 Demo Street, Sample City", mobile="9999999999",
-        gst_number="27DEMOG1234A1Z5", footer_message="Thank You, Visit Again!",
-        terms="Goods once sold will not be taken back.",
-    )
+    save_shop_setup(tenant_id, **_DEMO_SHOP_SETTINGS)
     register_user(tenant_id, DEMO_USERNAME, DEMO_PASSWORD, "Admin")
     activate_demo_subscription(tenant_id)
 

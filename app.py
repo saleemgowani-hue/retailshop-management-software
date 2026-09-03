@@ -186,7 +186,7 @@ def _df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Sheet1") -> bytes:
 # ---------------------------------------------------------------------------
 for key, default in [
     ("logged_in", False), ("tenant_id", None), ("username", ""), ("role", ""),
-    ("current_page", "Dashboard"), ("cart", []), ("confirm_delete", {}),
+    ("current_page", "Dashboard"), ("cart", []), ("confirm_delete", {}), ("is_demo_account", False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -222,18 +222,19 @@ def resolve_tenant_by_code(shop_code: str):
     with db.get_engine().connect() as conn:
         from sqlalchemy import text
         row = conn.execute(
-            text("SELECT id, shop_name FROM tenants WHERE installation_id = :code"),
+            text("SELECT id, shop_name, is_demo FROM tenants WHERE installation_id = :code"),
             {"code": shop_code.strip()},
         ).fetchone()
-        return (str(row[0]), row[1]) if row else (None, None)
+        return (str(row[0]), row[1], bool(row[2])) if row else (None, None, False)
 
 
-def _log_into_tenant(tenant_id, shop_name, username, role):
+def _log_into_tenant(tenant_id, shop_name, username, role, is_demo=False):
     st.session_state.logged_in = True
     st.session_state.tenant_id = tenant_id
     st.session_state.shop_name = shop_name
     st.session_state.username = username
     st.session_state.role = role
+    st.session_state.is_demo_account = is_demo
     st.rerun()
 
 
@@ -248,7 +249,7 @@ def login_screen():
             submitted = st.form_submit_button("Login", use_container_width=True)
 
             if submitted:
-                tenant_id, shop_name = resolve_tenant_by_code(shop_code)
+                tenant_id, shop_name, is_demo = resolve_tenant_by_code(shop_code)
                 if not tenant_id:
                     st.error("Shop Code galat hai.")
                     return
@@ -260,7 +261,7 @@ def login_screen():
 
                 user = db.check_login(tenant_id, username, password)
                 if user:
-                    _log_into_tenant(tenant_id, shop_name, user["username"], user["role"])
+                    _log_into_tenant(tenant_id, shop_name, user["username"], user["role"], is_demo=is_demo)
                 else:
                     st.error("Username ya Password galat hai.")
 
@@ -277,7 +278,7 @@ def login_screen():
             f"ya seedha neeche button dabayein:"
         )
         if st.button("🎬 Try Demo (One-Click Login)", use_container_width=True):
-            _log_into_tenant(demo_tenant_id, demo_shop_name, db.DEMO_USERNAME, "Admin")
+            _log_into_tenant(demo_tenant_id, demo_shop_name, db.DEMO_USERNAME, "Admin", is_demo=True)
 
 
 def signup_screen():
@@ -349,22 +350,29 @@ def render_sidebar():
     st.sidebar.markdown("---")
 
     if st.sidebar.button("🚪 Logout", use_container_width=True):
-        for key in ("logged_in", "tenant_id", "username", "role", "cart"):
-            st.session_state[key] = False if key == "logged_in" else ("" if key in ("username", "role") else ([] if key == "cart" else None))
+        st.session_state.logged_in = False
+        st.session_state.tenant_id = None
+        st.session_state.username = ""
+        st.session_state.role = ""
+        st.session_state.cart = []
+        st.session_state.is_demo_account = False
         st.rerun()
 
     with st.sidebar.expander("🔑 Change Password"):
-        with st.form("pwd_change_form"):
-            old_p = st.text_input("Current Password", type="password")
-            new_p = st.text_input("New Password", type="password")
-            p_sub = st.form_submit_button("Update Password", use_container_width=True)
-            if p_sub:
-                if old_p and new_p:
-                    tenant_id = st.session_state.tenant_id
-                    succ, message = db.change_password(tenant_id, st.session_state.username, old_p, new_p)
-                    (st.success if succ else st.error)(message)
-                else:
-                    st.warning("Please fill all fields.")
+        if st.session_state.is_demo_account:
+            st.caption("Demo account ka password change nahi kiya ja sakta — yeh sabke liye shared hai.")
+        else:
+            with st.form("pwd_change_form"):
+                old_p = st.text_input("Current Password", type="password")
+                new_p = st.text_input("New Password", type="password")
+                p_sub = st.form_submit_button("Update Password", use_container_width=True)
+                if p_sub:
+                    if old_p and new_p:
+                        tenant_id = st.session_state.tenant_id
+                        succ, message = db.change_password(tenant_id, st.session_state.username, old_p, new_p)
+                        (st.success if succ else st.error)(message)
+                    else:
+                        st.warning("Please fill all fields.")
 
     st.sidebar.markdown("---")
 
@@ -1433,6 +1441,13 @@ if not st.session_state.logged_in:
     else:
         login_screen()
 else:
+    # For the shared demo account, check on every page load whether it's
+    # due for its 60-minute auto-reset (wipes anything a visitor entered
+    # and reseeds the original sample data) -- a no-op cheap query outside
+    # that window, so this costs nothing for a normal tenant's session.
+    if st.session_state.is_demo_account:
+        db.maybe_reset_demo_data(st.session_state.tenant_id)
+
     # Re-check subscription EVERY page load, not just at login — a
     # subscription that expires/gets suspended mid-session must lock the
     # user out on their very next interaction, not just their next login.
