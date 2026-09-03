@@ -126,6 +126,24 @@ for key, default in [
 
 
 # ---------------------------------------------------------------------------
+# Database connectivity check — fail fast with ONE actionable message
+# instead of a redacted OperationalError surfacing later inside a form
+# (e.g. Signup), which gives the admin no clue that DATABASE_URL is
+# missing/unreachable.
+# ---------------------------------------------------------------------------
+_db_ok, _db_error = db.check_connection()
+if not _db_ok:
+    st.error(
+        "⚠️ Database se connect nahi ho paaya. Agar yeh app Streamlit Cloud "
+        "par deployed hai, to **Manage app → Settings → Secrets** mein "
+        "`DATABASE_URL = \"postgresql://user:password@host:5432/dbname\"` "
+        "add karein aur app ko reboot karein."
+    )
+    st.caption(f"Details: {_db_error}")
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
 # Tenant resolution + Login screen
 #
 # A shop is identified by its "Shop Code" (the tenant's installation_id --
@@ -141,6 +159,15 @@ def resolve_tenant_by_code(shop_code: str):
             {"code": shop_code.strip()},
         ).fetchone()
         return (str(row[0]), row[1]) if row else (None, None)
+
+
+def _log_into_tenant(tenant_id, shop_name, username, role):
+    st.session_state.logged_in = True
+    st.session_state.tenant_id = tenant_id
+    st.session_state.shop_name = shop_name
+    st.session_state.username = username
+    st.session_state.role = role
+    st.rerun()
 
 
 def login_screen():
@@ -166,12 +193,7 @@ def login_screen():
 
                 user = db.check_login(tenant_id, username, password)
                 if user:
-                    st.session_state.logged_in = True
-                    st.session_state.tenant_id = tenant_id
-                    st.session_state.shop_name = shop_name
-                    st.session_state.username = user["username"]
-                    st.session_state.role = user["role"]
-                    st.rerun()
+                    _log_into_tenant(tenant_id, shop_name, user["username"], user["role"])
                 else:
                     st.error("Username ya Password galat hai.")
 
@@ -179,6 +201,16 @@ def login_screen():
         if st.button("📝 New Shop Signup", use_container_width=True):
             st.session_state["show_signup"] = True
             st.rerun()
+
+        st.divider()
+        demo_tenant_id, demo_shop_name, demo_shop_code = db.get_or_create_demo_tenant()
+        st.caption(
+            f"👀 Bina signup ke try karna hai? Shop Code `{demo_shop_code}`, "
+            f"Username `{db.DEMO_USERNAME}`, Password `{db.DEMO_PASSWORD}` se login karein — "
+            f"ya seedha neeche button dabayein:"
+        )
+        if st.button("🎬 Try Demo (One-Click Login)", use_container_width=True):
+            _log_into_tenant(demo_tenant_id, demo_shop_name, db.DEMO_USERNAME, "Admin")
 
 
 def signup_screen():
@@ -189,17 +221,35 @@ def signup_screen():
             shop_name = st.text_input("Shop Name")
             admin_username = st.text_input("Admin Username")
             admin_password = st.text_input("Admin Password", type="password")
+            license_key = st.text_input(
+                "License Key",
+                help="Monthly ya Yearly plan ka activation code — billing/admin se milta hai",
+            )
             submitted = st.form_submit_button("Create Shop", use_container_width=True)
 
             if submitted:
                 if not shop_name.strip() or not admin_username.strip() or len(admin_password) < 4:
                     st.error("Shop Name, Username bharein, Password kam se kam 4 characters ka ho.")
                     return
+                if not license_key.strip():
+                    st.error("License Key bharna zaroori hai. Yeh billing/admin se milta hai.")
+                    return
+
+                key_ok, plan, days, key_msg = db.validate_license_key(license_key)
+                if not key_ok:
+                    st.error(f"⚠️ {key_msg}")
+                    return
+
                 tenant_id = db.create_tenant(shop_name.strip())
                 ok, msg = db.register_user(tenant_id, admin_username.strip(), admin_password, "Admin")
                 if not ok:
                     st.error(msg)
                     return
+
+                if not db.redeem_license_key(license_key, tenant_id):
+                    st.error("⚠️ Yeh License Key abhi-abhi kisi aur ne use kar li. Dusri key try karein.")
+                    return
+                db.create_or_renew_subscription(tenant_id, plan, days)
 
                 with db.get_engine().connect() as conn:
                     from sqlalchemy import text
@@ -211,7 +261,7 @@ def signup_screen():
                     f"Shop ban gayi! Aapka **Shop Code** hai: `{shop_code}` — ise safe rakhein, "
                     f"login karte waqt chahiye hoga."
                 )
-                st.info("No subscription is active yet — contact billing/admin to activate a plan before logging in.")
+                st.info(f"✅ {plan.capitalize()} plan ({days} din) activate ho gaya hai — turant login kar sakte hain.")
                 st.session_state["show_signup"] = False
 
         if st.button("⬅ Back to Login", use_container_width=True):

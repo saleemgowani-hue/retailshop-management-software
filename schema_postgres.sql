@@ -22,6 +22,26 @@ CREATE TABLE IF NOT EXISTS tenants (
     is_demo         BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- At most one shared "Try Demo" tenant at a time — makes
+-- get_or_create_demo_tenant() safe under concurrent first clicks.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_single_demo ON tenants (is_demo) WHERE is_demo;
+
+-- ----------------------------------------------------------------------------
+-- LICENSE_KEYS — admin-issued, one-time activation codes. Signup requires a
+-- valid, unused key; the key itself carries the plan (monthly/yearly) and
+-- period length, so signup activates the subscription immediately instead
+-- of leaving new shops locked out pending manual admin action.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS license_keys (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code               TEXT UNIQUE NOT NULL,
+    plan               TEXT NOT NULL CHECK (plan IN ('monthly', 'yearly')),
+    days               INTEGER NOT NULL CHECK (days > 0),
+    used_by_tenant_id  UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    used_at            TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_license_keys_code ON license_keys(code);
 
 -- ----------------------------------------------------------------------------
 -- SUBSCRIPTIONS — replaces license.py entirely. No free trial (per spec):
