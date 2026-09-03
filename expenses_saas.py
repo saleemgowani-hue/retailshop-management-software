@@ -13,7 +13,7 @@ import pandas as pd
 from datetime import date
 from sqlalchemy import text
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 
 def add_expense(tenant_id: str, expense_date: date, expense_type: str, amount: float, remarks: str = ""):
@@ -40,7 +40,7 @@ def add_expense(tenant_id: str, expense_date: date, expense_type: str, amount: f
 
 def get_expenses(tenant_id: str, start_date: date, end_date: date) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT id, expense_date, expense_type, amount, remarks
             FROM expenses WHERE tenant_id = :tid AND expense_date BETWEEN :sd AND :ed

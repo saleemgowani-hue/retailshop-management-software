@@ -15,7 +15,7 @@ code straight from the UUID itself (no extra per-tenant counter needed).
 import pandas as pd
 from sqlalchemy import text
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 
 def next_auto_barcode(product_id) -> str:
@@ -88,7 +88,7 @@ def get_all_products(tenant_id: str) -> pd.DataFrame:
     """Every product (active + inactive) for this tenant — used by the
     View/Edit and Delete tabs, which need to show deactivated items too."""
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("SELECT * FROM products WHERE tenant_id = :tid ORDER BY name"),
         engine, params={"tid": tenant_id}
     )

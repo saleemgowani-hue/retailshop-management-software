@@ -16,7 +16,7 @@ from datetime import datetime, date
 import pandas as pd
 from sqlalchemy import text
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ def fetch_active_products(tenant_id: str) -> pd.DataFrame:
     wired into app.py, keyed on tenant_id as the analysis's Section L
     requires); this function is the tenant-safe query underneath it."""
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("SELECT * FROM products WHERE tenant_id = :tid AND is_active = TRUE ORDER BY name"),
         engine, params={"tid": tenant_id}
     )
@@ -195,7 +195,7 @@ def save_sale(tenant_id: str, cust_name: str, cust_mobile: str, pay_mode: str,
 def get_sales_for_date(tenant_id: str, target_date: date) -> pd.DataFrame:
     """Tenant-scoped equivalent of app.py's Day Summary sales query."""
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT bill_number, customer_name, payment_mode, cash_amount, upi_amount, grand_total
             FROM sales WHERE tenant_id = :tid AND bill_date = :d ORDER BY bill_number DESC
