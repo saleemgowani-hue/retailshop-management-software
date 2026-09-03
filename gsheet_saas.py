@@ -18,7 +18,7 @@ from datetime import date, datetime
 import pandas as pd
 from sqlalchemy import text
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 try:
     import gspread
@@ -91,11 +91,11 @@ def sync_today_to_gsheet(tenant_id: str):
         today = date.today()
         engine = get_engine()
 
-        sales_df = pd.read_sql(
+        sales_df = read_sql_df(
             text("SELECT bill_number, bill_date, customer_name, payment_mode, grand_total FROM sales WHERE tenant_id = :tid AND bill_date = :d ORDER BY bill_number DESC"),
             engine, params={"tid": tenant_id, "d": today}
         )
-        purchases_df = pd.read_sql(
+        purchases_df = read_sql_df(
             text("""
                 SELECT pu.purchase_date, s.name AS supplier, p.name AS product, pu.quantity, pu.total_amount
                 FROM purchases pu
@@ -105,7 +105,7 @@ def sync_today_to_gsheet(tenant_id: str):
             """),
             engine, params={"tid": tenant_id, "d": today}
         )
-        expenses_df = pd.read_sql(
+        expenses_df = read_sql_df(
             text("SELECT expense_date, expense_type, amount, remarks FROM expenses WHERE tenant_id = :tid AND expense_date = :d"),
             engine, params={"tid": tenant_id, "d": today}
         )

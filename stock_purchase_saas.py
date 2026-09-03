@@ -17,7 +17,7 @@ import pandas as pd
 from datetime import date
 from sqlalchemy import text
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 
 def save_purchase(tenant_id: str, supplier_id: str, product_id: str, quantity: float,
@@ -116,7 +116,7 @@ def get_purchase_history(tenant_id: str, start_date: date, end_date: date, suppl
         query += " AND pu.supplier_id = :sid"
         params["sid"] = supplier_id
     query += " ORDER BY pu.purchase_date DESC"
-    return pd.read_sql(text(query), engine, params=params)
+    return read_sql_df(text(query), engine, params=params)
 
 
 def get_purchase_by_id(tenant_id: str, purchase_id: str):

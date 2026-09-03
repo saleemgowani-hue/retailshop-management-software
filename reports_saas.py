@@ -17,7 +17,7 @@ import pandas as pd
 from datetime import date
 from sqlalchemy import text
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ from database_saas import get_engine
 # ---------------------------------------------------------------------------
 def get_sales_report(tenant_id: str, start_date: date, end_date: date) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT bill_number, bill_date, customer_name, customer_mobile, payment_mode,
                    subtotal, discount, gst, grand_total, cash_amount, upi_amount
@@ -76,7 +76,7 @@ def get_sales_daymonth_breakdown(tenant_id: str, start_date: date, end_date: dat
 # ---------------------------------------------------------------------------
 def get_purchase_report(tenant_id: str, start_date: date, end_date: date) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT pu.purchase_date, s.name AS supplier, p.name AS product, pu.quantity,
                    pu.total_amount, pu.paid_amount
@@ -113,7 +113,7 @@ def get_purchase_daymonth_breakdown(tenant_id: str, start_date: date, end_date: 
 def get_all_supplier_payments_report(tenant_id: str, start_date: date, end_date: date, view_type: str = "all") -> pd.DataFrame:
     """All-suppliers combined Cash/UPI payment report, tenant-scoped."""
     engine = get_engine()
-    df = pd.read_sql(
+    df = read_sql_df(
         text("""
             SELECT sp.payment_date, s.name AS supplier, sp.cash_amount, sp.upi_amount, sp.total_amount
             FROM supplier_payments sp
@@ -144,7 +144,7 @@ def get_all_supplier_payments_report(tenant_id: str, start_date: date, end_date:
 # ---------------------------------------------------------------------------
 def get_expense_report(tenant_id: str, start_date: date, end_date: date) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT expense_date, expense_type, amount, remarks
             FROM expenses WHERE tenant_id = :tid AND expense_date BETWEEN :sd AND :ed
@@ -188,7 +188,7 @@ def get_profit_loss(tenant_id: str, start_date: date, end_date: date) -> dict:
 # ---------------------------------------------------------------------------
 def get_top_products(tenant_id: str, start_date: date, end_date: date, limit: int = 10) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT p.name AS product, SUM(si.quantity) AS qty_sold, SUM(si.total) AS revenue
             FROM sale_items si

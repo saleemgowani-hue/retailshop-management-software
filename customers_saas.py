@@ -14,7 +14,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 
 def add_customer(tenant_id: str, name: str, mobile: str = "", address: str = ""):
@@ -63,7 +63,7 @@ def update_customer(tenant_id: str, customer_id: str, name: str, mobile: str,
 
 def get_all_customers(tenant_id: str) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("SELECT * FROM customers WHERE tenant_id = :tid ORDER BY name"),
         engine, params={"tid": tenant_id}
     )
@@ -71,7 +71,7 @@ def get_all_customers(tenant_id: str) -> pd.DataFrame:
 
 def get_active_customers(tenant_id: str) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("SELECT * FROM customers WHERE tenant_id = :tid AND is_active = TRUE ORDER BY name"),
         engine, params={"tid": tenant_id}
     )
@@ -123,7 +123,7 @@ def get_purchase_history(tenant_id: str, mobile: str) -> pd.DataFrame:
     """Mobile-wise purchase history — tenant-scoped, so searching a mobile
     number can never surface another shop's bills for that same number."""
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT bill_number, bill_date, payment_mode, subtotal, discount, gst, grand_total
             FROM sales WHERE tenant_id = :tid AND customer_mobile = :mob

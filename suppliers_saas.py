@@ -10,7 +10,7 @@ PostgreSQL layer.
 import pandas as pd
 from sqlalchemy import text
 
-from database_saas import get_engine
+from database_saas import get_engine, read_sql_df
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def update_supplier(tenant_id: str, supplier_id: str, name: str, mobile: str,
 
 def get_all_suppliers(tenant_id: str) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("SELECT * FROM suppliers WHERE tenant_id = :tid ORDER BY name"),
         engine, params={"tid": tenant_id}
     )
@@ -64,7 +64,7 @@ def get_all_suppliers(tenant_id: str) -> pd.DataFrame:
 
 def get_active_suppliers(tenant_id: str) -> pd.DataFrame:
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("SELECT * FROM suppliers WHERE tenant_id = :tid AND is_active = TRUE ORDER BY name"),
         engine, params={"tid": tenant_id}
     )
@@ -111,7 +111,7 @@ def delete_or_deactivate_supplier(tenant_id: str, supplier_id: str):
 def get_ledger_summary(tenant_id: str) -> pd.DataFrame:
     """All-suppliers overview: Total Purchased, Total Paid, Balance Due."""
     engine = get_engine()
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT s.id, s.name,
                    COALESCE(SUM(pu.total_amount), 0) AS total_purchased,
@@ -130,7 +130,7 @@ def get_ledger_summary(tenant_id: str) -> pd.DataFrame:
 def get_supplier_transactions(tenant_id: str, supplier_id: str) -> pd.DataFrame:
     """Full purchase history for one supplier, with computed balance/status."""
     engine = get_engine()
-    df = pd.read_sql(
+    df = read_sql_df(
         text("""
             SELECT pu.id, pu.purchase_date, p.name AS product, pu.quantity,
                    pu.total_amount, pu.paid_amount,
@@ -198,7 +198,7 @@ def get_payment_history(tenant_id: str, supplier_id: str = None) -> pd.DataFrame
     else all suppliers combined (Reports Hub view)."""
     engine = get_engine()
     if supplier_id:
-        return pd.read_sql(
+        return read_sql_df(
             text("""
                 SELECT payment_date, cash_amount, upi_amount, total_amount
                 FROM supplier_payments WHERE tenant_id = :tid AND supplier_id = :sid
@@ -206,7 +206,7 @@ def get_payment_history(tenant_id: str, supplier_id: str = None) -> pd.DataFrame
             """),
             engine, params={"tid": tenant_id, "sid": supplier_id}
         )
-    return pd.read_sql(
+    return read_sql_df(
         text("""
             SELECT sp.payment_date, s.name AS supplier, sp.cash_amount, sp.upi_amount, sp.total_amount
             FROM supplier_payments sp

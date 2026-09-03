@@ -20,6 +20,7 @@ import binascii
 import secrets
 import uuid
 from datetime import date, datetime, timedelta
+import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
 
@@ -54,6 +55,27 @@ _engine = create_engine(
 def get_engine():
     """Exposed for callers (e.g. pandas.read_sql) that want the raw engine."""
     return _engine
+
+
+def read_sql_df(query, engine, params=None):
+    """Drop-in replacement for pandas.read_sql — every *_saas module should
+    use this (not pd.read_sql directly) for any DataFrame that reaches
+    st.dataframe/st.data_editor.
+
+    SQLAlchemy's psycopg2 dialect unconditionally decodes PostgreSQL UUID
+    columns to uuid.UUID objects (hardcoded in its on_connect, not
+    configurable). Newer pyarrow then serializes those using its
+    'arrow.uuid' extension type, which Streamlit's dataframe grid doesn't
+    know how to render — it falls back to showing the raw 16-byte value as
+    a {"0":.., "1":.., ...} object instead of the UUID string. Stringify
+    any UUID column here, once, rather than at every call site."""
+    df = pd.read_sql(query, engine, params=params)
+    for col in df.columns:
+        if df[col].dtype == object:
+            sample = df[col].dropna()
+            if len(sample) and isinstance(sample.iloc[0], uuid.UUID):
+                df[col] = df[col].astype(str)
+    return df
 
 
 def check_connection():
