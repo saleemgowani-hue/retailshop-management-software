@@ -44,7 +44,28 @@ st.set_page_config(page_title="Retail Shop SaaS", page_icon="🧾", layout="wide
 # ---------------------------------------------------------------------------
 st.markdown("""
     <style>
+    /* Force a light colour scheme explicitly. Without this, Android
+       Chrome's "Force dark mode for web contents" auto-inverts colours on
+       pages that don't declare their own scheme -- on this app that shows
+       up as solid black text input / selectbox boxes with invisible text,
+       since Streamlit's own light-theme styling isn't something Chrome's
+       heuristic understands. Declaring color-scheme opts the page out of
+       that auto-inversion. */
+    :root, html, body { color-scheme: light only; }
     .stApp { background-color: #f7f9fc; }
+    /* Explicit colours on every input-like control -- belt-and-suspenders
+       alongside color-scheme, since some Android Chrome versions still
+       partially invert individual form controls even on a page that
+       declares color-scheme: light. */
+    input[type="text"], input[type="password"], input[type="number"],
+    textarea, div[data-baseweb="select"] > div, div[data-baseweb="input"] {
+        background-color: #ffffff !important;
+        color: #262730 !important;
+    }
+    input[type="text"]::placeholder, input[type="password"]::placeholder,
+    input[type="number"]::placeholder, textarea::placeholder {
+        color: #808495 !important;
+    }
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #2b2d42 0%, #1a1c2e 100%);
     }
