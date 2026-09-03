@@ -394,23 +394,33 @@ def maybe_reset_demo_data(tenant_id: str):
     concurrent visitors hitting this past the 60-minute mark, only one
     caller's UPDATE actually matches a row (rowcount 1), so only that one
     proceeds to wipe+reseed — everyone else's UPDATE matches zero rows and
-    returns immediately. No-op (and cheap) for any non-demo tenant_id."""
-    with _engine.begin() as conn:
-        result = conn.execute(
-            text(f"""
-                UPDATE tenants SET demo_reset_at = now()
-                WHERE id = :tid AND is_demo
-                AND (demo_reset_at IS NULL OR demo_reset_at < now() - interval '{DEMO_RESET_INTERVAL_MINUTES} minutes')
-            """),
-            {"tid": tenant_id},
-        )
-        if result.rowcount == 0:
-            return
+    returns immediately. No-op (and cheap) for any non-demo tenant_id.
 
-    save_shop_setup(tenant_id, **_DEMO_SHOP_SETTINGS)
-    from demo_data_saas import clear_tenant_business_data, seed_demo_data
-    clear_tenant_business_data(tenant_id)
-    seed_demo_data(tenant_id)
+    This is called unconditionally on every login-screen view (i.e. for
+    EVERY visitor, not just demo ones) -- so it must never raise. If the
+    demo_reset_at column doesn't exist yet (schema_postgres.sql not
+    re-applied against production since this feature shipped) or any
+    other housekeeping failure happens, swallow it and skip this run's
+    reset rather than taking login down for everyone."""
+    try:
+        with _engine.begin() as conn:
+            result = conn.execute(
+                text(f"""
+                    UPDATE tenants SET demo_reset_at = now()
+                    WHERE id = :tid AND is_demo
+                    AND (demo_reset_at IS NULL OR demo_reset_at < now() - interval '{DEMO_RESET_INTERVAL_MINUTES} minutes')
+                """),
+                {"tid": tenant_id},
+            )
+            if result.rowcount == 0:
+                return
+
+        save_shop_setup(tenant_id, **_DEMO_SHOP_SETTINGS)
+        from demo_data_saas import clear_tenant_business_data, seed_demo_data
+        clear_tenant_business_data(tenant_id)
+        seed_demo_data(tenant_id)
+    except Exception:
+        pass
 
 
 def get_or_create_demo_tenant():
