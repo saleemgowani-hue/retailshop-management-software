@@ -1,0 +1,10 @@
+streamlit>=1.32
+pandas>=2.0
+openpyxl>=3.1
+psycopg2-binary>=2.9
+SQLAlchemy>=2.0
+python-barcode>=0.15
+Pillow>=10.0
+gspread>=6.0
+google-auth>=2.25
+pytesseract>=0.3.10
