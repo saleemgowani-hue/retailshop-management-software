@@ -1026,7 +1026,7 @@ def render_product_master_page():
 def render_supplier_page():
     tenant_id = st.session_state.tenant_id
     st.header("🏭 Supplier Management")
-    tab1, tab2, tab3 = st.tabs(["➕ Add / List", "✏️ Edit / Delete", "💳 Ledger"])
+    tab1, tab2, tab3, tab4 = st.tabs(["➕ Add / List", "✏️ Edit / Delete", "💳 Ledger", "📑 Tally Import"])
 
     with tab1:
         with st.form("add_supplier_form"):
@@ -1120,11 +1120,62 @@ def render_supplier_page():
             else:
                 st.dataframe(payment_history, use_container_width=True, hide_index=True)
 
+    with tab4:
+        st.markdown("##### 📑 Tally Se Suppliers Import Karein")
+        st.caption(
+            "Tally me: **Gateway of Tally → Masters → Accounts Info → Ledgers → Display** → "
+            "**Sundry Creditors** group select karein → **Alt+E** (Export) → Format: "
+            "**XML (Data Interchange)**. Wahi file yahan upload karein."
+        )
+        tally_sup_file = st.file_uploader("Tally XML File Upload Karein", type=["xml"], key="tally_sup_xml_upload")
+
+        if tally_sup_file is not None and st.button("📖 File Padhein (Preview)", key="tally_sup_parse_btn"):
+            preview_df, warnings = tally.parse_tally_ledgers_xml(tally_sup_file.read(), want_gst=True)
+            st.session_state["tally_sup_preview_df"] = preview_df
+            st.session_state["tally_sup_preview_warnings"] = warnings
+            st.rerun()
+
+        if st.session_state.get("tally_sup_preview_df") is not None:
+            preview_df = st.session_state["tally_sup_preview_df"]
+            for w in st.session_state.get("tally_sup_preview_warnings", []):
+                if "skip" in w or "nahi mila" in w or "nahi ho payi" in w:
+                    st.warning(w)
+                else:
+                    st.info(w)
+
+            if not preview_df.empty:
+                st.caption("Save karne se pehle yahan values check/edit kar sakte hain:")
+                edited_df = st.data_editor(
+                    preview_df, use_container_width=True, hide_index=True,
+                    num_rows="dynamic", key="tally_sup_data_editor",
+                )
+
+                tc1, tc2 = st.columns(2)
+                with tc1:
+                    if st.button("💾 Suppliers Me Save Karein", use_container_width=True, key="tally_sup_commit_btn"):
+                        summary = tally.import_suppliers_from_tally_df(tenant_id, edited_df)
+                        st.success(
+                            f"Total: {summary['total']} | Naye: {summary['imported']} | "
+                            f"Update hue: {summary['updated']}"
+                        )
+                        if summary["errors"]:
+                            st.warning("Kuch rows me dikkat aayi:")
+                            for err in summary["errors"]:
+                                st.caption(f"⚠️ {err}")
+                        st.session_state.pop("tally_sup_preview_df", None)
+                        st.session_state.pop("tally_sup_preview_warnings", None)
+                        st.rerun()
+                with tc2:
+                    if st.button("❌ Cancel Karein", use_container_width=True, key="tally_sup_cancel_btn"):
+                        st.session_state.pop("tally_sup_preview_df", None)
+                        st.session_state.pop("tally_sup_preview_warnings", None)
+                        st.rerun()
+
 
 def render_customer_page():
     tenant_id = st.session_state.tenant_id
     st.header("👥 Customer Management")
-    tab1, tab2, tab3 = st.tabs(["➕ Add / List", "✏️ Edit / Delete", "🧾 Purchase History"])
+    tab1, tab2, tab3, tab4 = st.tabs(["➕ Add / List", "✏️ Edit / Delete", "🧾 Purchase History", "📑 Tally Import"])
 
     with tab1:
         with st.form("add_customer_form"):
@@ -1180,6 +1231,57 @@ def render_customer_page():
                 st.metric("🧾 Total Bills", len(history))
                 st.metric("💰 Total Spent", f"₹ {history['grand_total'].sum():,.2f}")
                 st.dataframe(history, use_container_width=True, hide_index=True)
+
+    with tab4:
+        st.markdown("##### 📑 Tally Se Customers Import Karein")
+        st.caption(
+            "Tally me: **Gateway of Tally → Masters → Accounts Info → Ledgers → Display** → "
+            "**Sundry Debtors** group select karein → **Alt+E** (Export) → Format: "
+            "**XML (Data Interchange)**. Wahi file yahan upload karein."
+        )
+        tally_cust_file = st.file_uploader("Tally XML File Upload Karein", type=["xml"], key="tally_cust_xml_upload")
+
+        if tally_cust_file is not None and st.button("📖 File Padhein (Preview)", key="tally_cust_parse_btn"):
+            preview_df, warnings = tally.parse_tally_ledgers_xml(tally_cust_file.read(), want_gst=False)
+            st.session_state["tally_cust_preview_df"] = preview_df
+            st.session_state["tally_cust_preview_warnings"] = warnings
+            st.rerun()
+
+        if st.session_state.get("tally_cust_preview_df") is not None:
+            preview_df = st.session_state["tally_cust_preview_df"]
+            for w in st.session_state.get("tally_cust_preview_warnings", []):
+                if "skip" in w or "nahi mila" in w or "nahi ho payi" in w:
+                    st.warning(w)
+                else:
+                    st.info(w)
+
+            if not preview_df.empty:
+                st.caption("Save karne se pehle yahan values check/edit kar sakte hain:")
+                edited_df = st.data_editor(
+                    preview_df, use_container_width=True, hide_index=True,
+                    num_rows="dynamic", key="tally_cust_data_editor",
+                )
+
+                tc1, tc2 = st.columns(2)
+                with tc1:
+                    if st.button("💾 Customers Me Save Karein", use_container_width=True, key="tally_cust_commit_btn"):
+                        summary = tally.import_customers_from_tally_df(tenant_id, edited_df)
+                        st.success(
+                            f"Total: {summary['total']} | Naye: {summary['imported']} | "
+                            f"Update hue: {summary['updated']}"
+                        )
+                        if summary["errors"]:
+                            st.warning("Kuch rows me dikkat aayi:")
+                            for err in summary["errors"]:
+                                st.caption(f"⚠️ {err}")
+                        st.session_state.pop("tally_cust_preview_df", None)
+                        st.session_state.pop("tally_cust_preview_warnings", None)
+                        st.rerun()
+                with tc2:
+                    if st.button("❌ Cancel Karein", use_container_width=True, key="tally_cust_cancel_btn"):
+                        st.session_state.pop("tally_cust_preview_df", None)
+                        st.session_state.pop("tally_cust_preview_warnings", None)
+                        st.rerun()
 
 
 def render_stock_purchase_page():
