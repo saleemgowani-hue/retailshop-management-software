@@ -34,6 +34,7 @@ import receipts_saas as rcpt
 import ocr_saas as ocr
 import bulk_import_export_saas as bulk
 import demo_data_saas as demo
+import tally_import_saas as tally
 
 st.set_page_config(page_title="Retail Shop SaaS", page_icon="🧾", layout="wide")
 
@@ -818,7 +819,10 @@ def render_pos_page():
 def render_product_master_page():
     tenant_id = st.session_state.tenant_id
     st.header("📦 Product Master")
-    tab1, tab2, tab3, tab4 = st.tabs(["➕ Add Product", "✏️ View/Edit/Delete", "🏷️ Barcode Labels", "📊 Bulk Import/Export"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "➕ Add Product", "✏️ View/Edit/Delete", "🏷️ Barcode Labels",
+        "📊 Bulk Import/Export", "📑 Tally Import",
+    ])
 
     with tab1:
         with st.form("add_product_form"):
@@ -966,6 +970,57 @@ def render_product_master_page():
                 for err in summary["errors"]:
                     st.caption(f"⚠️ {err}")
             st.rerun()
+
+    with tab5:
+        st.markdown("##### 📑 Tally Se Products Import Karein")
+        st.caption(
+            "Tally me: **Gateway of Tally → Masters → Inventory Info → Stock Items** → items select "
+            "karein (Alt+A = sab select) → **Alt+E** (Export) → Format: **XML (Data Interchange)**. "
+            "Wahi file yahan upload karein."
+        )
+        tally_file = st.file_uploader("Tally XML File Upload Karein", type=["xml"], key="tally_xml_upload")
+
+        if tally_file is not None and st.button("📖 File Padhein (Preview)", key="tally_parse_btn"):
+            preview_df, warnings = tally.parse_tally_stock_items_xml(tally_file.read())
+            st.session_state["tally_preview_df"] = preview_df
+            st.session_state["tally_preview_warnings"] = warnings
+            st.rerun()
+
+        if st.session_state.get("tally_preview_df") is not None:
+            preview_df = st.session_state["tally_preview_df"]
+            for w in st.session_state.get("tally_preview_warnings", []):
+                if "skip" in w or "nahi mila" in w or "nahi ho payi" in w:
+                    st.warning(w)
+                else:
+                    st.info(w)
+
+            if not preview_df.empty:
+                st.caption("Save karne se pehle yahan values check/edit kar sakte hain (khaaskar Selling Price):")
+                edited_df = st.data_editor(
+                    preview_df, use_container_width=True, hide_index=True,
+                    num_rows="dynamic", key="tally_data_editor",
+                )
+
+                tc1, tc2 = st.columns(2)
+                with tc1:
+                    if st.button("💾 Products Me Save Karein", use_container_width=True, key="tally_commit_btn"):
+                        summary = tally.import_products_from_tally_df(tenant_id, edited_df)
+                        st.success(
+                            f"Total: {summary['total']} | Naye: {summary['imported']} | "
+                            f"Update hue: {summary['updated']}"
+                        )
+                        if summary["errors"]:
+                            st.warning("Kuch rows me dikkat aayi:")
+                            for err in summary["errors"]:
+                                st.caption(f"⚠️ {err}")
+                        st.session_state.pop("tally_preview_df", None)
+                        st.session_state.pop("tally_preview_warnings", None)
+                        st.rerun()
+                with tc2:
+                    if st.button("❌ Cancel Karein", use_container_width=True, key="tally_cancel_btn"):
+                        st.session_state.pop("tally_preview_df", None)
+                        st.session_state.pop("tally_preview_warnings", None)
+                        st.rerun()
 
 
 def render_supplier_page():
