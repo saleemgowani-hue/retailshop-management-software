@@ -1149,14 +1149,23 @@ def render_supplier_page():
                     preview_df, use_container_width=True, hide_index=True,
                     num_rows="dynamic", key="tally_sup_data_editor",
                 )
+                opening_balance_date = st.date_input(
+                    "Opening Balance kis date tak ki hai?", value=date.today(),
+                    key="tally_sup_ob_date",
+                    help="Agar kisi row me Opening Balance bhara hai, to woh is date se ek purchase "
+                         "entry ke roop me Supplier Ledger me judega.",
+                )
 
                 tc1, tc2 = st.columns(2)
                 with tc1:
                     if st.button("💾 Suppliers Me Save Karein", use_container_width=True, key="tally_sup_commit_btn"):
-                        summary = tally.import_suppliers_from_tally_df(tenant_id, edited_df)
+                        summary = tally.import_suppliers_from_tally_df(
+                            tenant_id, edited_df, opening_balance_as_of=opening_balance_date
+                        )
                         st.success(
                             f"Total: {summary['total']} | Naye: {summary['imported']} | "
-                            f"Update hue: {summary['updated']}"
+                            f"Update hue: {summary['updated']} | "
+                            f"Opening Balance judi: {summary['opening_balances']}"
                         )
                         if summary["errors"]:
                             st.warning("Kuch rows me dikkat aayi:")

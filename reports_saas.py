@@ -75,11 +75,14 @@ def get_sales_daymonth_breakdown(tenant_id: str, start_date: date, end_date: dat
 # Purchase Report
 # ---------------------------------------------------------------------------
 def get_purchase_report(tenant_id: str, start_date: date, end_date: date) -> pd.DataFrame:
+    """A row with no product (product_id IS NULL) is an opening-balance
+    entry from suppliers_saas.record_opening_balance(), labelled
+    accordingly rather than showing a blank product cell."""
     engine = get_engine()
     return read_sql_df(
         text("""
-            SELECT pu.purchase_date, s.name AS supplier, p.name AS product, pu.quantity,
-                   pu.total_amount, pu.paid_amount
+            SELECT pu.purchase_date, s.name AS supplier, COALESCE(p.name, 'Opening Balance') AS product,
+                   pu.quantity, pu.total_amount, pu.paid_amount
             FROM purchases pu
             LEFT JOIN suppliers s ON s.id = pu.supplier_id AND s.tenant_id = pu.tenant_id
             LEFT JOIN products p ON p.id = pu.product_id AND p.tenant_id = pu.tenant_id
