@@ -100,12 +100,130 @@ def save_purchase(tenant_id: str, supplier_id: str, product_id: str, quantity: f
         return False, f"Could not save purchase: {e}"
 
 
+def _split_amount(total: float, weights: list) -> list:
+    """Distributes `total` across `weights` (e.g. each bill line's total_amount)
+    proportionally, rounded to 2 decimals, with the rounding remainder pushed
+    onto the last item so the parts sum EXACTLY to `total` -- used to split one
+    Cash/UPI payment across a multi-item bill's purchase rows."""
+    n = len(weights)
+    total = round(total or 0, 2)
+    weight_sum = sum(weights)
+    if total <= 0 or n == 0 or weight_sum <= 0:
+        return [0.0] * n
+    shares = [round(total * w / weight_sum, 2) for w in weights]
+    diff = round(total - sum(shares), 2)
+    shares[-1] = round(shares[-1] + diff, 2)
+    return shares
+
+
+def save_purchase_bill(tenant_id: str, supplier_id: str, bill_number: str, items: list,
+                        cash_now: float = 0, upi_now: float = 0,
+                        update_product_price: bool = False, bill_photo_ref: str = None):
+    """
+    One supplier bill with multiple product lines. The schema has no
+    separate bill-header table, so this saves one `purchases` row PER LINE
+    (same as save_purchase() above), all tagged with the same bill_number
+    so they can be filtered/grouped together afterwards.
+
+    The bill's total Cash/UPI payment is split across lines proportional to
+    each line's own total_amount (via _split_amount), so the Supplier
+    Ledger balance per product comes out correct without the user having to
+    split the payment manually line by line.
+
+    items: list of {"product_id", "quantity", "purchase_price", "discount",
+    "gst", "transport"} dicts, one per bill line ("discount"/"gst"/
+    "transport" default to 0 if omitted).
+    Returns (success: bool, result): list of purchase_ids on success, an
+    error message on failure.
+    """
+    if not items:
+        return False, "Bill me kam se kam ek product line honi chahiye."
+
+    line_totals = []
+    for item in items:
+        base = float(item["quantity"]) * float(item["purchase_price"])
+        taxable = max(base - float(item.get("discount") or 0), 0)
+        gst_amt = taxable * float(item.get("gst") or 0) / 100
+        line_totals.append(round(taxable + gst_amt + float(item.get("transport") or 0), 2))
+
+    grand_total = round(sum(line_totals), 2)
+    paid_now = round((cash_now or 0) + (upi_now or 0), 2)
+    if paid_now > grand_total + 0.01:
+        return False, f"Cash + UPI (₹{paid_now:.2f}) Bill Total (₹{grand_total:.2f}) se zyada hai."
+
+    cash_shares = _split_amount(cash_now, line_totals)
+    upi_shares = _split_amount(upi_now, line_totals)
+
+    engine = get_engine()
+    purchase_date = date.today()
+    purchase_ids = []
+    try:
+        with engine.begin() as conn:
+            supplier_ok = conn.execute(
+                text("SELECT 1 FROM suppliers WHERE tenant_id = :tid AND id = :sid"),
+                {"tid": tenant_id, "sid": supplier_id},
+            ).fetchone()
+            if not supplier_ok:
+                return False, "Supplier not found (or belongs to a different shop)."
+
+            for item, line_total, cash_share, upi_share in zip(items, line_totals, cash_shares, upi_shares):
+                product_row = conn.execute(
+                    text("SELECT id FROM products WHERE tenant_id = :tid AND id = :pid"),
+                    {"tid": tenant_id, "pid": item["product_id"]},
+                ).fetchone()
+                if not product_row:
+                    return False, f"Product not found (or belongs to a different shop): {item.get('product_id')}"
+
+                paid_share = round(cash_share + upi_share, 2)
+                row = conn.execute(
+                    text("""
+                        INSERT INTO purchases (tenant_id, purchase_date, supplier_id, product_id, quantity,
+                                                purchase_price, discount, gst, transport, total_amount,
+                                                paid_amount, bill_photo_path, bill_number)
+                        VALUES (:tid, :pd, :sid, :pid, :qty, :pp, :disc, :gst, :transport, :total,
+                                :paid, :photo, :bill_number)
+                        RETURNING id
+                    """),
+                    {"tid": tenant_id, "pd": purchase_date, "sid": supplier_id, "pid": item["product_id"],
+                     "qty": item["quantity"], "pp": item["purchase_price"], "disc": item.get("discount") or 0,
+                     "gst": item.get("gst") or 0, "transport": item.get("transport") or 0, "total": line_total,
+                     "paid": paid_share, "photo": bill_photo_ref, "bill_number": (bill_number or None)},
+                ).fetchone()
+                purchase_id = row[0]
+                purchase_ids.append(str(purchase_id))
+
+                conn.execute(
+                    text("UPDATE products SET opening_stock = opening_stock + :qty WHERE tenant_id = :tid AND id = :pid"),
+                    {"qty": item["quantity"], "tid": tenant_id, "pid": item["product_id"]},
+                )
+                if update_product_price:
+                    conn.execute(
+                        text("UPDATE products SET purchase_price = :pp WHERE tenant_id = :tid AND id = :pid"),
+                        {"pp": item["purchase_price"], "tid": tenant_id, "pid": item["product_id"]},
+                    )
+
+                if paid_share > 0:
+                    conn.execute(
+                        text("""
+                            INSERT INTO supplier_payments (tenant_id, purchase_id, supplier_id, payment_date,
+                                                             cash_amount, upi_amount, total_amount)
+                            VALUES (:tid, :pid, :sid, :pd, :cash, :upi, :total)
+                        """),
+                        {"tid": tenant_id, "pid": purchase_id, "sid": supplier_id, "pd": purchase_date,
+                         "cash": cash_share, "upi": upi_share, "total": paid_share},
+                    )
+
+        return True, purchase_ids
+    except Exception as e:
+        return False, f"Could not save purchase bill: {e}"
+
+
 def get_purchase_history(tenant_id: str, start_date: date, end_date: date, supplier_id: str = None) -> pd.DataFrame:
     engine = get_engine()
     query = """
         SELECT pu.id, pu.purchase_date, s.name AS supplier, p.name AS product, pu.quantity,
                pu.purchase_price, pu.discount, pu.gst, pu.transport, pu.total_amount,
-               pu.paid_amount, pu.bill_photo_path, pu.supplier_id, pu.product_id
+               pu.paid_amount, pu.bill_photo_path, pu.supplier_id, pu.product_id, pu.bill_number
         FROM purchases pu
         LEFT JOIN suppliers s ON s.id = pu.supplier_id AND s.tenant_id = pu.tenant_id
         LEFT JOIN products p ON p.id = pu.product_id AND p.tenant_id = pu.tenant_id
