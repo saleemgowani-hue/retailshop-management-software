@@ -128,11 +128,14 @@ def get_ledger_summary(tenant_id: str) -> pd.DataFrame:
 
 
 def get_supplier_transactions(tenant_id: str, supplier_id: str) -> pd.DataFrame:
-    """Full purchase history for one supplier, with computed balance/status."""
+    """Full purchase history for one supplier, with computed balance/status.
+    A row with no product (product_id IS NULL) is an opening-balance entry
+    from record_opening_balance() below, labelled accordingly rather than
+    showing a blank product cell."""
     engine = get_engine()
     df = read_sql_df(
         text("""
-            SELECT pu.id, pu.purchase_date, p.name AS product, pu.quantity,
+            SELECT pu.id, pu.purchase_date, COALESCE(p.name, 'Opening Balance') AS product, pu.quantity,
                    pu.total_amount, pu.paid_amount,
                    (pu.total_amount - pu.paid_amount) AS balance
             FROM purchases pu
@@ -145,6 +148,49 @@ def get_supplier_transactions(tenant_id: str, supplier_id: str) -> pd.DataFrame:
     if not df.empty:
         df["status"] = df["balance"].apply(lambda b: "Paid" if b <= 0.005 else "Pending/Partial")
     return df
+
+
+def record_opening_balance(tenant_id: str, supplier_id: str, amount: float, as_of_date):
+    """
+    Creates a synthetic purchase record (product_id = NULL) representing
+    a supplier's outstanding balance from BEFORE this software was in
+    use -- e.g. migrating existing dues from Tally. Adds to the Supplier
+    Ledger's balance_due via the normal total_amount - paid_amount
+    calculation (no product/quantity, so it never touches any product's stock).
+
+    Idempotent per supplier: if an opening-balance entry already exists
+    (any purchase with product_id IS NULL for this supplier), does
+    nothing — so re-running a Tally import never double-counts the debt.
+    Returns (ok: bool, message: str).
+    """
+    if not amount or amount <= 0:
+        return False, "Opening balance 0 ya khaali hai, skip kiya."
+
+    engine = get_engine()
+    try:
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text("""
+                    SELECT 1 FROM purchases
+                    WHERE tenant_id = :tid AND supplier_id = :sid AND product_id IS NULL
+                """),
+                {"tid": tenant_id, "sid": supplier_id},
+            ).fetchone()
+            if existing:
+                return False, "Opening balance pehle se import ho chuki hai, dobara skip kiya."
+
+            conn.execute(
+                text("""
+                    INSERT INTO purchases (tenant_id, purchase_date, supplier_id, product_id,
+                                            quantity, purchase_price, discount, gst, transport,
+                                            total_amount, paid_amount)
+                    VALUES (:tid, :pd, :sid, NULL, 0, 0, 0, 0, 0, :amt, 0)
+                """),
+                {"tid": tenant_id, "pd": as_of_date, "sid": supplier_id, "amt": amount},
+            )
+        return True, f"Opening balance ₹{amount:,.2f} import ho gaya."
+    except Exception as e:
+        return False, f"Opening balance save nahi hui: {e}"
 
 
 def record_supplier_payment(tenant_id: str, purchase_id: str, supplier_id: str,

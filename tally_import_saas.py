@@ -39,7 +39,7 @@ import customers_saas as cust
 from barcode_saas import safe_barcode_str
 
 PREVIEW_COLUMNS = ["name", "unit", "opening_stock", "purchase_price", "selling_price", "gst"]
-SUPPLIER_PREVIEW_COLUMNS = ["name", "mobile", "address", "gst_number"]
+SUPPLIER_PREVIEW_COLUMNS = ["name", "mobile", "address", "gst_number", "opening_balance"]
 CUSTOMER_PREVIEW_COLUMNS = ["name", "mobile", "address"]
 
 
@@ -245,6 +245,23 @@ def _ledger_address(ledger_el) -> str:
     return ", ".join(lines)
 
 
+def _ledger_opening_balance(ledger_el) -> float:
+    """Tally's sign convention for OPENINGBALANCE (debit positive / credit
+    negative, or the reverse) varies enough across versions/configs that
+    guessing it wrong would silently record an incorrect debt. Returns
+    the ABSOLUTE value only -- the preview table shows it plainly as
+    "amount owed to this supplier" for the user to confirm or correct
+    before saving, same forgiving-parser-plus-human-review posture as
+    every other field here."""
+    text_val = ledger_el.findtext("OPENINGBALANCE")
+    if not text_val:
+        return 0.0
+    try:
+        return abs(float(text_val.strip()))
+    except ValueError:
+        return 0.0
+
+
 def parse_tally_ledgers_xml(file_bytes: bytes, want_gst: bool):
     """
     Returns (df, warnings). df has columns SUPPLIER_PREVIEW_COLUMNS (if
@@ -284,6 +301,7 @@ def parse_tally_ledgers_xml(file_bytes: bytes, want_gst: bool):
         row = {"name": name, "mobile": mobile, "address": address}
         if want_gst:
             row["gst_number"] = _ledger_text(ledger, "PARTYGSTIN", "GSTIN")
+            row["opening_balance"] = _ledger_opening_balance(ledger)
         rows.append(row)
 
     if rows:
@@ -296,14 +314,31 @@ def parse_tally_ledgers_xml(file_bytes: bytes, want_gst: bool):
         else:
             warnings.append(f"{len(rows)} ledger mile — neeche table check karke save karein.")
 
+        if want_gst and any(r.get("opening_balance") for r in rows):
+            warnings.append(
+                "⚠️ Opening Balance column: yeh 'supplier ko kitna paisa dena hai' maana jaa raha hai "
+                "(Tally ka +/- sign yahan check nahi kiya ja raha, kyunki woh version ke hisaab se badalta "
+                "hai). Agar kisi supplier ka ulta mamla hai (jaise advance diya hua hai, due nahi hai), to "
+                "uski value 0 kar dein ya edit kar lein — sirf ek baar import hoga, dobara import karne par "
+                "dobara nahi judega."
+            )
+
     return pd.DataFrame(rows, columns=columns), warnings
 
 
-def import_suppliers_from_tally_df(tenant_id: str, df: pd.DataFrame):
+def import_suppliers_from_tally_df(tenant_id: str, df: pd.DataFrame, opening_balance_as_of=None):
     """Matches existing suppliers BY NAME — re-importing an updated Tally
     export later updates the same rows instead of creating duplicates.
-    Returns {"total", "imported", "updated", "errors": [...]}."""
-    summary = {"total": len(df), "imported": 0, "updated": 0, "errors": []}
+
+    If the df has an "opening_balance" column (the Supplier preview
+    always does) and opening_balance_as_of is given, also records each
+    non-zero balance via suppliers_saas.record_opening_balance() —
+    idempotent per supplier, so re-importing never double-counts the
+    debt even though the supplier row itself gets updated every time.
+
+    Returns {"total", "imported", "updated", "opening_balances": int,
+    "errors": [...]}."""
+    summary = {"total": len(df), "imported": 0, "updated": 0, "opening_balances": 0, "errors": []}
 
     existing = sup.get_all_suppliers(tenant_id)
     existing_by_name = {}
@@ -321,6 +356,7 @@ def import_suppliers_from_tally_df(tenant_id: str, df: pd.DataFrame):
         address = str(row.get("address") or "").strip()
         gst_number = str(row.get("gst_number") or "").strip()
         existing_id = existing_by_name.get(name.lower())
+        supplier_id = None
 
         if existing_id:
             existing_row = existing[existing["id"].astype(str) == existing_id].iloc[0]
@@ -330,14 +366,28 @@ def import_suppliers_from_tally_df(tenant_id: str, df: pd.DataFrame):
             )
             if ok:
                 summary["updated"] += 1
+                supplier_id = existing_id
             else:
                 summary["errors"].append(f"Row {idx + 1} ({name}): {msg}")
         else:
             ok, result = sup.add_supplier(tenant_id, name, mobile, address, gst_number)
             if ok:
                 summary["imported"] += 1
+                supplier_id = result
             else:
                 summary["errors"].append(f"Row {idx + 1} ({name}): {result}")
+
+        if supplier_id and opening_balance_as_of is not None:
+            try:
+                balance = float(row.get("opening_balance") or 0)
+            except (TypeError, ValueError):
+                balance = 0.0
+            if balance > 0:
+                ok, msg = sup.record_opening_balance(tenant_id, supplier_id, balance, opening_balance_as_of)
+                if ok:
+                    summary["opening_balances"] += 1
+                elif "pehle se import" not in msg:
+                    summary["errors"].append(f"Row {idx + 1} ({name}) opening balance: {msg}")
 
     return summary
 
