@@ -1303,40 +1303,105 @@ def render_stock_purchase_page():
         st.warning("Pehle ek Supplier aur ek Product add karein.")
         return
 
-    st.markdown("##### 📷 Supplier Bill Photo (Optional)")
-    st.caption(
-        "Photo yahan attach kar sakte ho — OCR se text nikal ke dikha denge taaki numbers jaldi "
-        "padh sako. Values yahan khud hi form me bharni hongi — automatic bharne se galti ka risk hota hai."
-    )
-    bill_photo = st.file_uploader("Bill Photo Upload Karein", type=["jpg", "jpeg", "png"], key="bill_photo_upload")
-    if bill_photo is not None:
-        st.image(bill_photo, caption="Uploaded Bill", width=300)
-        if ocr.OCR_AVAILABLE:
-            if st.button("🔍 Photo Se Text Nikalein (OCR)"):
-                text_out, err = ocr.extract_text_from_bill_image(bill_photo)
-                if err:
-                    st.warning(err)
-                else:
-                    st.text_area("📝 OCR se nikla text (khud verify karke form me bharein)", value=text_out or "", height=150)
-        else:
-            st.info("OCR library install nahi hai — photo phir bhi save hogi.")
+    tab_single, tab_multi = st.tabs(["➕ Single Item Entry", "🧾 Multi-Item Bill Entry"])
 
-    with st.form("purchase_form"):
-        sel_supplier = st.selectbox("Supplier", suppliers_df["name"].tolist())
-        sel_product = st.selectbox("Product", products_df["name"].tolist())
-        qty = st.number_input("Quantity", min_value=0.01, value=1.0)
-        price = st.number_input("Purchase Price", min_value=0.0)
-        cash_now = st.number_input("Cash Paid Now", min_value=0.0)
-        upi_now = st.number_input("UPI Paid Now", min_value=0.0)
-        if st.form_submit_button("Save Purchase"):
-            sid = str(suppliers_df[suppliers_df["name"] == sel_supplier].iloc[0]["id"])
-            pid = str(products_df[products_df["name"] == sel_product].iloc[0]["id"])
-            # Note: actual photo bytes aren't persisted to disk here (Streamlit
-            # Cloud's filesystem is ephemeral) -- wire bill_photo_ref up to your
-            # object-storage upload (S3/Cloud Storage) and pass its URL/key here.
-            ok, result = spur.save_purchase(tenant_id, sid, pid, qty, price, 0, 0, 0, cash_now, upi_now)
+    with tab_single:
+        st.markdown("##### 📷 Supplier Bill Photo (Optional)")
+        st.caption(
+            "Photo yahan attach kar sakte ho — OCR se text nikal ke dikha denge taaki numbers jaldi "
+            "padh sako. Values yahan khud hi form me bharni hongi — automatic bharne se galti ka risk hota hai."
+        )
+        bill_photo = st.file_uploader("Bill Photo Upload Karein", type=["jpg", "jpeg", "png"], key="bill_photo_upload")
+        if bill_photo is not None:
+            st.image(bill_photo, caption="Uploaded Bill", width=300)
+            if ocr.OCR_AVAILABLE:
+                if st.button("🔍 Photo Se Text Nikalein (OCR)"):
+                    text_out, err = ocr.extract_text_from_bill_image(bill_photo)
+                    if err:
+                        st.warning(err)
+                    else:
+                        st.text_area("📝 OCR se nikla text (khud verify karke form me bharein)", value=text_out or "", height=150)
+            else:
+                st.info("OCR library install nahi hai — photo phir bhi save hogi.")
+
+        with st.form("purchase_form"):
+            sel_supplier = st.selectbox("Supplier", suppliers_df["name"].tolist())
+            sel_product = st.selectbox("Product", products_df["name"].tolist())
+            qty = st.number_input("Quantity", min_value=0.01, value=1.0)
+            price = st.number_input("Purchase Price", min_value=0.0)
+            cash_now = st.number_input("Cash Paid Now", min_value=0.0)
+            upi_now = st.number_input("UPI Paid Now", min_value=0.0)
+            if st.form_submit_button("Save Purchase"):
+                sid = str(suppliers_df[suppliers_df["name"] == sel_supplier].iloc[0]["id"])
+                pid = str(products_df[products_df["name"] == sel_product].iloc[0]["id"])
+                # Note: actual photo bytes aren't persisted to disk here (Streamlit
+                # Cloud's filesystem is ephemeral) -- wire bill_photo_ref up to your
+                # object-storage upload (S3/Cloud Storage) and pass its URL/key here.
+                ok, result = spur.save_purchase(tenant_id, sid, pid, qty, price, 0, 0, 0, cash_now, upi_now)
+                if ok:
+                    st.success("Purchase saved!")
+                    st.rerun()
+                else:
+                    st.error(result)
+
+    with tab_multi:
+        st.caption(
+            "Ek supplier bill me kai products hote hain — sab ek saath yahan add karein, ek hi "
+            "click me sab ki stock aur Supplier Ledger update ho jaayegi."
+        )
+        bill_sel_supplier = st.selectbox("Supplier", suppliers_df["name"].tolist(), key="bill_supplier_sel")
+        bill_number_input = st.text_input("Bill/Invoice Number (Optional)", key="bill_number_input")
+
+        default_items_df = pd.DataFrame([{
+            "Product": products_df["name"].iloc[0], "Quantity": 1.0, "Purchase Price": 0.0,
+            "Discount": 0.0, "GST %": 0.0, "Transport": 0.0,
+        }])
+        items_df = st.data_editor(
+            st.session_state.get("bill_items_df", default_items_df),
+            column_config={
+                "Product": st.column_config.SelectboxColumn(options=products_df["name"].tolist(), required=True),
+                "Quantity": st.column_config.NumberColumn(min_value=0.01, required=True),
+                "Purchase Price": st.column_config.NumberColumn(min_value=0.0, required=True),
+                "Discount": st.column_config.NumberColumn(min_value=0.0),
+                "GST %": st.column_config.NumberColumn(min_value=0.0, max_value=100.0),
+                "Transport": st.column_config.NumberColumn(min_value=0.0),
+            },
+            num_rows="dynamic", use_container_width=True, hide_index=True, key="bill_items_editor",
+        )
+        st.session_state["bill_items_df"] = items_df
+
+        bill_preview_total = 0.0
+        for _, r in items_df.iterrows():
+            base = float(r.get("Quantity") or 0) * float(r.get("Purchase Price") or 0)
+            taxable = max(base - float(r.get("Discount") or 0), 0)
+            bill_preview_total += taxable + taxable * float(r.get("GST %") or 0) / 100 + float(r.get("Transport") or 0)
+        st.metric("Bill Total", f"₹{bill_preview_total:,.2f}")
+
+        bc1, bc2 = st.columns(2)
+        bill_cash_now = bc1.number_input("Cash Paid Now", min_value=0.0, key="bill_cash_now")
+        bill_upi_now = bc2.number_input("UPI Paid Now", min_value=0.0, key="bill_upi_now")
+        bill_update_prices = st.checkbox("Products ka Purchase Price bhi update karein", key="bill_update_prices")
+
+        if st.button("💾 Poora Bill Save Karein", key="bill_save_btn"):
+            items = []
+            for _, r in items_df.iterrows():
+                if not r.get("Product") or not r.get("Quantity"):
+                    continue
+                pid = str(products_df[products_df["name"] == r["Product"]].iloc[0]["id"])
+                items.append({
+                    "product_id": pid, "quantity": float(r.get("Quantity") or 0),
+                    "purchase_price": float(r.get("Purchase Price") or 0),
+                    "discount": float(r.get("Discount") or 0), "gst": float(r.get("GST %") or 0),
+                    "transport": float(r.get("Transport") or 0),
+                })
+            sid = str(suppliers_df[suppliers_df["name"] == bill_sel_supplier].iloc[0]["id"])
+            ok, result = spur.save_purchase_bill(
+                tenant_id, sid, bill_number_input, items,
+                bill_cash_now, bill_upi_now, bill_update_prices,
+            )
             if ok:
-                st.success("Purchase saved!")
+                st.success(f"Bill save ho gaya — {len(result)} products ki entry ban gayi.")
+                st.session_state.pop("bill_items_df", None)
                 st.rerun()
             else:
                 st.error(result)

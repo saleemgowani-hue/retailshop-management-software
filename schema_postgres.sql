@@ -173,6 +173,10 @@ CREATE TABLE IF NOT EXISTS purchases (
     bill_photo_path   TEXT   -- becomes an object-storage URL/key in SaaS, not a local path
 );
 CREATE INDEX IF NOT EXISTS idx_purchases_tenant_date ON purchases(tenant_id, purchase_date);
+-- Optional free-text tag so multiple product lines entered from the same
+-- supplier bill (via save_purchase_bill()) can be filtered/grouped together.
+-- No bill-header table -- the schema stays flat, same as the rest of this table.
+ALTER TABLE purchases ADD COLUMN IF NOT EXISTS bill_number TEXT;
 
 -- ----------------------------------------------------------------------------
 -- SALES (was "bills") — bill_number unique PER TENANT now.
