@@ -1,16 +1,22 @@
 """
-tally_import_saas.py — Tenant-aware Tally (Prime/ERP9) -> Products import.
+tally_import_saas.py — Tenant-aware Tally (Prime/ERP9) -> Products /
+Suppliers / Customers import.
 
 Tally runs on the shop's own computer; this app runs on Streamlit Cloud,
 so there's no live network path between them (Tally's ODBC/HTTP server
 only ever listens on localhost). The only practical bridge is a file:
-the shop owner exports their Stock Items from Tally as XML --
+the shop owner exports from Tally as XML and uploads that file here.
 
-    Gateway of Tally -> Masters -> Inventory Info -> Stock Items
+Products: Gateway of Tally -> Masters -> Inventory Info -> Stock Items
     -> select the items (or Alt+A for all) -> Alt+E (Export)
     -> Format: XML (Data Interchange)
 
--- and uploads that .xml file here.
+Suppliers / Customers: Gateway of Tally -> Masters -> Accounts Info ->
+    Ledgers -> Display -> select the "Sundry Creditors" (Suppliers) or
+    "Sundry Debtors" (Customers) GROUP -> Alt+E (Export) -> Format:
+    XML (Data Interchange). See the LEDGERS section below for why
+    exporting one group at a time, rather than the whole chart of
+    accounts, is what keeps this reliable.
 
 Tally's XML export varies a fair amount by version/configuration (GST
 may be set at item level, stock-group level, or not at all; quantities
@@ -28,9 +34,13 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 
 import products_saas as prod
+import suppliers_saas as sup
+import customers_saas as cust
 from barcode_saas import safe_barcode_str
 
 PREVIEW_COLUMNS = ["name", "unit", "opening_stock", "purchase_price", "selling_price", "gst"]
+SUPPLIER_PREVIEW_COLUMNS = ["name", "mobile", "address", "gst_number"]
+CUSTOMER_PREVIEW_COLUMNS = ["name", "mobile", "address"]
 
 
 def _parse_qty(text):
@@ -193,6 +203,182 @@ def import_products_from_tally_df(tenant_id: str, df: pd.DataFrame):
                 _num("purchase_price"), _num("selling_price"), _num("gst", 5.0),
                 _num("opening_stock"), 5.0,
             )
+            if ok:
+                summary["imported"] += 1
+            else:
+                summary["errors"].append(f"Row {idx + 1} ({name}): {result}")
+
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# LEDGERS (Suppliers / Customers) — Tally's Ledger master covers EVERY
+# account in the company (Cash, Bank, Capital, Sales, Purchase, Duties &
+# Taxes, Sundry Debtors, Sundry Creditors, ...), so unlike Stock Items
+# there's no single export that's "just the suppliers" or "just the
+# customers". Auto-classifying by each ledger's <PARENT> group name is
+# fragile the moment a shop files suppliers under a custom sub-group
+# (e.g. "Local Suppliers" nested under "Sundry Creditors") -- the
+# <PARENT> tag only ever gives the IMMEDIATE parent, not the full chain.
+#
+# Tally's own Display drill-down already resolves that hierarchy, though:
+# Gateway of Tally -> Masters -> Accounts Info -> Ledgers -> Display ->
+# select the "Sundry Debtors" (or "Sundry Creditors") GROUP shows every
+# ledger under it, sub-groups included. Exporting from THAT screen (Alt+E,
+# XML) hands back exactly the right set with zero classification logic
+# needed here -- the user picks Supplier vs Customer by which Tally group
+# they exported, same as they'd pick it in Tally itself.
+# ---------------------------------------------------------------------------
+def _ledger_text(ledger_el, *tag_names):
+    """Tally's mobile/phone tag name has drifted across versions
+    (LEDGERMOBILE, LEDMOBILE, LEDGERPHONE, ...) -- try each in order and
+    use the first that's actually present and non-empty."""
+    for tag in tag_names:
+        val = ledger_el.findtext(tag)
+        if val and val.strip():
+            return val.strip()
+    return ""
+
+
+def _ledger_address(ledger_el) -> str:
+    lines = [a.text.strip() for a in ledger_el.findall("ADDRESS.LIST/ADDRESS") if a.text and a.text.strip()]
+    return ", ".join(lines)
+
+
+def parse_tally_ledgers_xml(file_bytes: bytes, want_gst: bool):
+    """
+    Returns (df, warnings). df has columns SUPPLIER_PREVIEW_COLUMNS (if
+    want_gst) or CUSTOMER_PREVIEW_COLUMNS, one row per <LEDGER> found
+    anywhere in the file. Mobile/address/GSTIN are best-effort (left
+    blank, never guessed) -- same forgiving posture as the Stock Item
+    parser: review in the editable preview before saving, not an
+    auto-save.
+    """
+    columns = SUPPLIER_PREVIEW_COLUMNS if want_gst else CUSTOMER_PREVIEW_COLUMNS
+    try:
+        root = ET.fromstring(file_bytes)
+    except ET.ParseError as e:
+        return pd.DataFrame(columns=columns), [
+            f"XML parse nahi ho payi: {e}. Sahi Tally export file hai ya check karein."
+        ]
+
+    ledgers = root.findall(".//LEDGER")
+    if not ledgers:
+        return pd.DataFrame(columns=columns), [
+            "File me koi Ledger nahi mila. Tally me Gateway of Tally -> Masters -> Accounts Info -> "
+            "Ledgers -> Display -> Sundry Debtors/Sundry Creditors group select karke, format "
+            "'XML (Data Interchange)' me export karein."
+        ]
+
+    warnings = []
+    rows = []
+    for ledger in ledgers:
+        name = (ledger.get("NAME") or "").strip()
+        if not name:
+            warnings.append("Ek Ledger ka naam khaali tha, skip kiya.")
+            continue
+
+        mobile = _ledger_text(ledger, "LEDGERMOBILE", "LEDMOBILE", "LEDGERPHONE", "MOBILE")
+        address = _ledger_address(ledger)
+
+        row = {"name": name, "mobile": mobile, "address": address}
+        if want_gst:
+            row["gst_number"] = _ledger_text(ledger, "PARTYGSTIN", "GSTIN")
+        rows.append(row)
+
+    if rows:
+        missing_mobile = sum(1 for r in rows if not r["mobile"])
+        if missing_mobile:
+            warnings.append(
+                f"{len(rows)} ledger mile, {missing_mobile} me mobile number nahi tha — "
+                f"neeche table me chahein to bhar sakte hain (zaroori nahi hai)."
+            )
+        else:
+            warnings.append(f"{len(rows)} ledger mile — neeche table check karke save karein.")
+
+    return pd.DataFrame(rows, columns=columns), warnings
+
+
+def import_suppliers_from_tally_df(tenant_id: str, df: pd.DataFrame):
+    """Matches existing suppliers BY NAME — re-importing an updated Tally
+    export later updates the same rows instead of creating duplicates.
+    Returns {"total", "imported", "updated", "errors": [...]}."""
+    summary = {"total": len(df), "imported": 0, "updated": 0, "errors": []}
+
+    existing = sup.get_all_suppliers(tenant_id)
+    existing_by_name = {}
+    if not existing.empty:
+        for _, r in existing.iterrows():
+            existing_by_name[str(r["name"]).strip().lower()] = str(r["id"])
+
+    for idx, row in df.iterrows():
+        name = str(row.get("name", "")).strip()
+        if not name or name.lower() == "nan":
+            summary["errors"].append(f"Row {idx + 1}: naam khaali hai, skip kiya.")
+            continue
+
+        mobile = str(row.get("mobile") or "").strip()
+        address = str(row.get("address") or "").strip()
+        gst_number = str(row.get("gst_number") or "").strip()
+        existing_id = existing_by_name.get(name.lower())
+
+        if existing_id:
+            existing_row = existing[existing["id"].astype(str) == existing_id].iloc[0]
+            ok, msg = sup.update_supplier(
+                tenant_id, existing_id, name, mobile, address, gst_number,
+                bool(existing_row.get("is_active", True)),
+            )
+            if ok:
+                summary["updated"] += 1
+            else:
+                summary["errors"].append(f"Row {idx + 1} ({name}): {msg}")
+        else:
+            ok, result = sup.add_supplier(tenant_id, name, mobile, address, gst_number)
+            if ok:
+                summary["imported"] += 1
+            else:
+                summary["errors"].append(f"Row {idx + 1} ({name}): {result}")
+
+    return summary
+
+
+def import_customers_from_tally_df(tenant_id: str, df: pd.DataFrame):
+    """Matches existing customers BY NAME — re-importing an updated Tally
+    export later updates the same rows instead of creating duplicates.
+    (A mobile-number collision with an unrelated existing customer is
+    still caught by customers.mobile's UNIQUE constraint and surfaces as
+    a normal per-row error, same as the manual Add Customer form.)
+    Returns {"total", "imported", "updated", "errors": [...]}."""
+    summary = {"total": len(df), "imported": 0, "updated": 0, "errors": []}
+
+    existing = cust.get_all_customers(tenant_id)
+    existing_by_name = {}
+    if not existing.empty:
+        for _, r in existing.iterrows():
+            existing_by_name[str(r["name"]).strip().lower()] = str(r["id"])
+
+    for idx, row in df.iterrows():
+        name = str(row.get("name", "")).strip()
+        if not name or name.lower() == "nan":
+            summary["errors"].append(f"Row {idx + 1}: naam khaali hai, skip kiya.")
+            continue
+
+        mobile = str(row.get("mobile") or "").strip()
+        address = str(row.get("address") or "").strip()
+        existing_id = existing_by_name.get(name.lower())
+
+        if existing_id:
+            existing_row = existing[existing["id"].astype(str) == existing_id].iloc[0]
+            ok, msg = cust.update_customer(
+                tenant_id, existing_id, name, mobile, address,
+                bool(existing_row.get("is_active", True)),
+            )
+            if ok:
+                summary["updated"] += 1
+            else:
+                summary["errors"].append(f"Row {idx + 1} ({name}): {msg}")
+        else:
+            ok, result = cust.add_customer(tenant_id, name, mobile, address)
             if ok:
                 summary["imported"] += 1
             else:
